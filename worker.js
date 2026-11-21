@@ -1,6 +1,7 @@
 const TTL_MS = 30 * 60 * 1000; // Tự xoá tin nhắn cũ hơn 30 phút
 const MAX_MESSAGES = 100;
 const KV_KEY = "hirose_miyano_messages";
+const COUNTER_KEY = "hirose_miyano_seq";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -25,14 +26,29 @@ async function loadAndCleanMessages(env) {
 
   const raw = await env.CHAT_KV.get(KV_KEY, { type: "json" });
   const list = Array.isArray(raw) ? raw : [];
-  const now = Date.now();
-  const valid = list.filter((item) => item && typeof item.ts === "number" && now - item.ts <= TTL_MS);
+  const nowMs = Date.now();
+
+  const valid = list.filter((item) => {
+    if (!item || typeof item !== "object") return false;
+    const tsMs = typeof item.ts === "number"
+      ? item.ts
+      : (typeof item.time === "number" ? item.time * 1000 : nowMs);
+    return nowMs - tsMs <= TTL_MS;
+  });
 
   if (valid.length !== list.length) {
     await env.CHAT_KV.put(KV_KEY, JSON.stringify(valid));
   }
 
   return valid;
+}
+
+async function nextNumericId(env) {
+  const currentRaw = await env.CHAT_KV.get(COUNTER_KEY);
+  const currentNum = Number(currentRaw) || 0;
+  const nextNum = currentNum + 1;
+  await env.CHAT_KV.put(COUNTER_KEY, String(nextNum));
+  return nextNum;
 }
 
 export default {
@@ -50,8 +66,13 @@ export default {
       }
 
       if (request.method === "GET" && path === "/messages") {
-        const messages = await loadAndCleanMessages(env);
-        return jsonResponse({ ok: true, messages });
+        const afterParam = Number(url.searchParams.get("after") || "0") || 0;
+        const allMessages = await loadAndCleanMessages(env);
+        const filtered = afterParam > 0
+          ? allMessages.filter((m) => (Number(m.id) || 0) > afterParam)
+          : allMessages;
+
+        return jsonResponse({ ok: true, messages: filtered });
       }
 
       if (request.method === "POST" && path === "/send") {
@@ -62,23 +83,38 @@ export default {
           return jsonResponse({ ok: false, error: "Invalid JSON" }, 400);
         }
 
-        const sender = String(body.sender || body.user || body.username || "Member")
+        const userName = String(
+          body.user || body.sender || body.displayName || body.username || "Player"
+        )
           .trim()
           .slice(0, 40);
+
         const text = String(body.text || body.message || body.content || "")
           .trim()
-          .slice(0, 500);
+          .slice(0, 200);
 
         if (!text) {
           return jsonResponse({ ok: false, error: "Message text is required" }, 400);
         }
 
+        const nowMs = Date.now();
+        const nowSec = typeof body.time === "number" && body.time > 0
+          ? Math.floor(body.time)
+          : Math.floor(nowMs / 1000);
+
+        const numericId = await nextNumericId(env);
         const messages = await loadAndCleanMessages(env);
+
         const newMsg = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          sender: sender || "Member",
+          id: numericId,
+          user: userName || "Player",
+          sender: userName || "Player",
+          displayName: String(body.displayName || userName || "Player").trim().slice(0, 40),
+          userId: Number(body.userId) || 0,
           text,
-          ts: Date.now(),
+          time: nowSec,
+          ts: nowMs,
+          server: String(body.server || "Global").slice(0, 24),
         };
 
         messages.push(newMsg);
@@ -86,6 +122,10 @@ export default {
         await env.CHAT_KV.put(KV_KEY, JSON.stringify(trimmed));
 
         return jsonResponse({ ok: true, message: newMsg }, 201);
+      }
+
+      if (request.method === "POST" && path === "/ping") {
+        return jsonResponse({ ok: true, users: [] });
       }
 
       return jsonResponse({ ok: false, error: "Not Found" }, 404);
