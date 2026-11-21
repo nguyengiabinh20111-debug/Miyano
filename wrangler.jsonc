@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "miyano",
+  "main": "Worker.js",
+  "compatibility_date": "2026-11-21",
+  "kv_namespaces": [
+    {
+      "binding": "CHAT_KV",
+      "id": "46ad0c5c4c2a43fa9a1085dbad25847c"
+    }
+  ]
+}
